@@ -95,7 +95,10 @@ Calls `GetObjectPointClouds` on a list of vision services, optionally filters by
 
 ```json
 {
-  "vision_services": ["<vision service 1>", "<vision service 2>"],
+  "vision_services": [
+    { "name": "<vision service 1>", "min_objects": 1 },
+    { "name": "<vision service 2>", "min_objects": 1 }
+  ],
   "label": "<optional label filter>",
 
   "outlier_mean_k": 50,
@@ -108,10 +111,20 @@ Calls `GetObjectPointClouds` on a list of vision services, optionally filters by
 }
 ```
 
+A legacy string list (`["svc1","svc2"]`) is still accepted and treats every source as optional (`min_objects: 0`), matching the previous soft-fail behavior.
+
+Sources are fetched **in parallel** (async left/right GetObjectPointClouds). Set `use_min_world_z: true` with `min_world_z_mm` (e.g. `5`) to drop table-bleed points under glass masks before cleaning.
+
+Optional `balance_centers` (default **false**): when enabled and ≥2 sources contribute with `|ΔY| ≤ agree_delta_y_mm` (default 40), shift cleaned XY center toward the mean of per-source centers. cup-eval showed no XY gain — leave off unless re-testing.
+
 | Name | Type | Required | Default | Description |
 | ---- | ---- | -------- | ------- | ----------- |
-| `vision_services` | string list | Yes | — | Source vision services. Each must implement `GetObjectPointClouds`. |
+| `vision_services` | list of strings or `{name, min_objects}` objects | Yes | — | Source vision services. Each must implement `GetObjectPointClouds`. Object form: `min_objects` is the minimum number of label-matching non-empty objects required from that source on each `NextPointCloud` (errors count as 0). `0` keeps soft-fail / skip. If any required source is short, the whole call fails. |
 | `label` | string | No | "" | If set, only objects whose `Geometry.Label()` equals this string are merged. |
+| `use_min_world_z` | bool | No | false | When true, drop points with world `Z < min_world_z_mm` before the cleaning pipeline. |
+| `min_world_z_mm` | float | No | 0 | Floor threshold used when `use_min_world_z` is true. |
+| `balance_centers` | bool | No | false | When true, shift cleaned XY center toward the mean of per-source centers if ΔY agrees. |
+| `agree_delta_y_mm` | float | No | 40 | Max `|ΔY|` (mm) between the first two source centers to allow balancing. |
 | `outlier_mean_k` | int | No | 50 | `meanK` for the statistical outlier filter. Set `<= 0` to disable this stage. |
 | `outlier_std_dev_thresh` | float | No | 2.0 | StdDev multiplier for the outlier filter — points whose mean kNN distance exceeds `mean + this * stddev` are dropped. |
 | `cluster_max_distance` | float (mm) | No | 10 | Voxel cell size for the largest-connected-component step. Two voxels with `>= cluster_min_points_per_segment` points are connected if they are 26-grid-neighbors. Set `<= 0` to disable this stage. |
@@ -121,6 +134,34 @@ Calls `GetObjectPointClouds` on a list of vision services, optionally filters by
 | `disable_cleaning` | bool | No | false | If `true`, bypass all three cleaning stages and return the raw merged cloud. |
 
 Defaults are tuned conservatively for cup/bottle-sized objects on a tabletop. Set any numeric knob to a negative value (e.g. `-1`) to explicitly disable that stage; setting it to `0` re-applies the default.
+
+### DoCommand (runtime levers for cup-eval)
+
+Used by pouring-demo `cup-eval` isolation presets. Overrides are in-memory until `reset_params` or module rebuild.
+
+```json
+{"set_params": {
+  "balance_centers": false,
+  "min_sources": 1,
+  "enabled_sources": ["sam2-segmenter-left"]
+}}
+```
+
+```json
+{"status": true}
+```
+
+```json
+{"reset_params": true}
+```
+
+| Verb | Fields | Description |
+| ---- | ------ | ----------- |
+| `set_params` | `balance_centers` (bool), `min_sources` (int), `enabled_sources` (string list) | Override config for subsequent `NextPointCloud` calls. `enabled_sources` matches vision service short name, full name, or config `name`. Empty list re-enables all. |
+| `status` | — | Returns current effective `balance_centers`, `min_sources`, `enabled_sources`, and whether overrides are active. |
+| `reset_params` | — | Clear all runtime overrides. |
+
+**WIP freeze:** do not treat these overrides (or right-arm world-frame edits) as production calibration fixes until `cup-eval report` has a full isolation matrix. See pouring-demo `cmd/cup-eval/README.md`.
 
 ---
 
